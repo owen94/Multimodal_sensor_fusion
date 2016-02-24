@@ -18,6 +18,7 @@ import numpy as np
 import pickle
 from AE_RMSE_Missing import test_AE as build_block
 
+theano.config.optimizer= 'fast_compile'
 
 class SAE(object):
 
@@ -26,7 +27,7 @@ class SAE(object):
                  ae2,
         input = None,
         indi_matrix = None,
-        missing = False,
+        missing = None,
         param_list = None,
                  ):
 
@@ -36,20 +37,36 @@ class SAE(object):
         self.missing = missing
 
 
-        self.W1,self.W4,self.b1,self.b4,self.G = load_tensor_params_ae(ae1)
-        self.W2,self.W3,self.b2,self.b3,self.G_share = load_tensor_params_ae(ae2)
+        self.W1,self.W4,self.b1,self.b4,self.G,self.G_decay1,self.multi_sparsity1,self.multi_sparse_weight1= \
+            load_tensor_params_ae(ae1)
+        self.W2,self.W3,self.b2,self.b3,self.G_share,self.G_decay2,self.multi_sparsity2,self.multi_sparse_weight2 = \
+            load_tensor_params_ae(ae2)
 
-        self.G_decay1 = ae1.G_decay
-        self.G_decay2 = ae2.G_decay
+        # print('Checking the values here')
+        #
+        # W1,W2,b1,b2,G = load_numerical_params_ae(ae1)
+        # print(W1,W2,b1,b2,G)
+        #
+        G_decay1 = self.G_decay1.get_value(borrow = True)
+        print(G_decay1.shape)
+        G_decay2 = self.G_decay2.get_value(borrow = True)
+        print(G_decay2.shape)
+        W1 = self.W1.get_value(borrow = True)
+        print(W1.shape)
+        W4 = self.W4.get_value(borrow = True)
+        print(W4.shape)
+        W2 = self.W2.get_value(borrow = True)
+        print(W2.shape)
+        W3 = self.W3.get_value(borrow = True)
+        print(W3.shape)
+        # Actually, the value of the model is correctly passed to the sae model
 
-        self.multi_sparsity1 = ae1.multi_sparsity
-        self.multi_sparsity2 = ae1.multi_sparsity
+        norm_indi = T.sum(self.indi_matrix, axis = 0)
+        self.norm_indi = norm_indi
 
-        self.multi_sparse_weight1 = ae1.multi_sparse_weight
-        self.multi_sparse_weight2 = ae2.multi_sparse_weight
 
-        self.norm_indi = ae1.norm_indi
 
+        #self.params = [self.W1]
         self.params = [self.W1, self.W2, self.W3, self.W4, self.b1, self.b2,self.b3, self.b4]
 
     def get_h1(self):
@@ -82,9 +99,11 @@ class SAE(object):
 
     def finetuning(self,learning_rate):
 
+        print('...Doing finetuning gradient descent here...')
+
         h1 = self.get_h1()
         h2 = self.get_h2(h1)
-        h3 = self.get_h2(h2)
+        h3 = self.get_h3(h2)
         z = self.get_reconstructed(h3)
 
         residue = z - self.x
@@ -92,15 +111,17 @@ class SAE(object):
 
         if self.missing:
 
+
             cost_part1 = 0.5*T.sum(((self.indi_matrix*residue)**2)/self.norm_indi)\
-                         +0.5*(T.sum((self.W1*self.G_decay1)**2)+T.sum((self.W2*self.G_decay1.T)**2))
+                         +0.5*(T.sum((self.W1*self.G_decay1)**2)+T.sum((self.W2*self.G_decay2)**2))\
+                         +0.5*(T.sum((self.W3*self.G_decay2.T)**2)+T.sum((self.W4*self.G_decay1.T)**2))
 
             mean_activation1 = T.dot(self.indi_matrix.T, h1)/self.norm_indi
 
             KL1 = (1+mean_activation1)*(T.log(1+mean_activation1) -T.log(1+self.multi_sparsity1))\
                  + (1-mean_activation1)*(T.log(1-mean_activation1) - T.log(1-self.multi_sparsity1))
 
-            mean_activation2 = T.mean(h3,axis=0)
+            mean_activation2 = T.mean(h2,axis=0)
 
             cost_part2 = 1/self.x.shape[1]*T.sum(self.multi_sparse_weight1 * KL1)
 
@@ -110,8 +131,8 @@ class SAE(object):
             cost_part3 = T.sum(self.multi_sparse_weight2 * KL2)
 
             cost = cost_part1 + cost_part2 + cost_part3
-
-            gparams = T.grad(cost, self.params)
+            #
+            gparams = T.grad(cost_part1, self.params)
             # generate the list of updates
             updates = [
             (param, param - learning_rate * gparam)
@@ -122,14 +143,15 @@ class SAE(object):
         else:
 
             cost_part1 = 0.5*T.sum((residue**2)/self.x.shape[0])\
-                         +0.5*(T.sum((self.W1*self.G_decay1)**2)+T.sum((self.W2*self.G_decay1.T)**2))
+                         +0.5*(T.sum((self.W1*self.G_decay1)**2)+T.sum((self.W2*self.G_decay2)**2))\
+                         +0.5*(T.sum((self.W3*self.G_decay2.T)**2)+T.sum((self.W4*self.G_decay1.T)**2))
 
             mean_activation1 = T.mean(h1,axis=0)
 
             KL1 = (1+mean_activation1)*(T.log(1+mean_activation1) -T.log(1+self.multi_sparsity1))\
                  + (1-mean_activation1)*(T.log(1-mean_activation1) - T.log(1-self.multi_sparsity1))
 
-            mean_activation2 = T.mean(h3,axis=0)
+            mean_activation2 = T.mean(h2,axis=0)
 
             cost_part2 = T.sum(self.multi_sparse_weight1 * KL1)
 
@@ -140,7 +162,7 @@ class SAE(object):
 
             cost = cost_part1 + cost_part2 + cost_part3
 
-            gparams = T.grad(cost, self.params)
+            gparams = T.grad(cost_part1, self.params)
             # generate the list of updates
             updates = [
             (param, param - learning_rate * gparam)
@@ -153,10 +175,10 @@ class SAE(object):
 
         h1 = self.get_h1()
         h2 = self.get_h2(h1)
-        h3 = self.get_h2(h2)
+        h3 = self.get_h3(h2)
         z = self.get_reconstructed(h3)
 
-        residue = z*self.indi_matrix - self.x
+        residue = z - self.x
 
         if self.missing:
 
@@ -170,8 +192,8 @@ class SAE(object):
 
 
 
-def test_SAE(data = '',validationdata='',param_list= [], missing1=True, missing2 = False,share1 = False,share2 = True,
-             missingrate1 = 0, missingrate2 = 0,learningrate = 0.08, training_epochs = 10,batch_size = 3000,
+def test_SAE(data = '',validationdata='',param_list= [], n_hidden1 = 288,n_hidden2 = 100,missing1= False, missing2 = False,share1 = False,share2 = True,
+             missingrate1 = 0, missingrate2 = 0,learningrate = 0.08, training_epochs = 3,batch_size = 3000,
              output_folder = ''):
 
 
@@ -180,7 +202,7 @@ def test_SAE(data = '',validationdata='',param_list= [], missing1=True, missing2
         os.makedirs(newpath)
 
     ae1, h1, h_valid, indi_matrix_test,indi_matrix_valid_test = \
-        build_block(data,validationdata, param_list,share1,missing1, missingrate1,
+        build_block(data,validationdata, param_list,n_hidden1,share1,missing1, missingrate1,
                       learningrate, training_epochs,
                       batch_size, output_folder='m_HI_1',order = 1)
 
@@ -188,7 +210,7 @@ def test_SAE(data = '',validationdata='',param_list= [], missing1=True, missing2
 
 
     ae2,h2,h2_valid,indi_matrix_test2,indi_matrix_valid_test2 = \
-        build_block(h1, h_valid, param_list,share2,missing = missing2, missing_rate = missingrate2,
+        build_block(h1, h_valid, param_list,n_hidden2,share2,missing = missing2, missing_rate = missingrate2,
                       learning_rate=learningrate, training_epochs= training_epochs,
                       batch_size = 30, output_folder='m_HI_2',order = 2)
 
@@ -206,17 +228,27 @@ def test_SAE(data = '',validationdata='',param_list= [], missing1=True, missing2
 
     index = T.lscalar()    # index to a [mini]batch
     x = T.matrix('x')
-    y = T.matrix('y')# the data is presented as rasterized images
+    y = T.matrix('y')
     # end-snippet-2
 
+
     sae = SAE(
-        ae1,
-        ae2,
+        ae1=ae1,
+        ae2=ae2,
         input = x,
         indi_matrix = y,
         missing = missing1,
-        param_list = None,
+        param_list = param_list,
     )
+
+    # datasets = np.load(data)
+    #
+    # indi_matrix = [0]*raw.shape[1]
+    # for i in range(raw.shape[1]):
+    #     indi_matrix[i] = np.random.binomial(1, 1-missingrate1,(raw.shape[0],1))
+    # indi_matrix = np.concatenate(indi_matrix,axis = 1)
+    # datasets = theano.shared(np.asarray(datasets,dtype=theano.config.floatX),name='datasets', borrow=True)
+    # indi_matrix = theano.shared(np.asarray(indi_matrix,dtype = theano.config.floatX ),name='indi_matrix', borrow=True)
 
     cost,updates = sae.finetuning(learningrate)
 
@@ -377,5 +409,7 @@ if __name__ == '__main__':
     param_list = [[1e-5,0.01,1e-5],[1e-5,0.01,1e-5]]
     dataset = '../Data/train_HumIllumDF_new.npy'
     validationset = '../Data/test_HumIllumDF_new.npy'
-    test_SAE(data=dataset,validationdata = validationset,param_list=param_list)
+    n_hidden1 = 288
+    n_hidden2 = 100
+    test_SAE(data=dataset,validationdata = validationset,param_list=param_list,n_hidden1 = n_hidden1,n_hidden2=n_hidden2)
 
