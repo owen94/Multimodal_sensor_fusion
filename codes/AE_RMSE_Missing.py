@@ -13,6 +13,7 @@ import theano.tensor as T
 from theano.tensor.shared_randomstreams import RandomStreams
 from normLib import normActiv,denormActiv,sigmoid,tanh
 from utils_copy import ravel_param, unravel_param,save,load,RMSE,error_ratio,load_data
+from load_models import load_numerical_params_ae
 
 try:
     import PIL.Image as Image
@@ -49,8 +50,7 @@ class AE(object):
         bvis=None,
         missing = False,
         param_list = None,
-        batch_size = 20
-
+        share = False
     ):
 
         if not theano_rng:
@@ -68,8 +68,7 @@ class AE(object):
 
         norm_indi = T.sum(self.indi_matrix, axis = 0)
         self.norm_indi = norm_indi
-
-
+        self.share = share
         self.numMod = len(param_list)
         print('numMod is : ')
         print(self.numMod )
@@ -119,7 +118,7 @@ class AE(object):
         if not W2:
             random_state = numpy.random.RandomState(None)
             r = numpy.sqrt(6)/numpy.sqrt(n_hidden + n_visible+1)
-            initial_W2 = random_state.rand(n_visible,n_hidden)*2*r-r
+            initial_W2 = random_state.rand(n_hidden,n_visible)*2*r-r
             initial_W2 = numpy.asarray(initial_W2, dtype=theano.config.floatX)
 
             # initial_W2 = numpy.asarray(
@@ -332,21 +331,27 @@ class AE(object):
             return cost_part1
 
 
-def test_AE(data='',validationdata= '', param_list= None,missing = True, missing_rate = 0,learning_rate=0.08, training_epochs= 10,
-            batch_size=30, output_folder='dA_plots'):
+def test_AE(data='',validationdata= '', param_list= None,share= False,missing = True,
+            missing_rate = 0.2,learning_rate=0.08, training_epochs= 10,
+            batch_size=30, output_folder='dA_plots',order = 1):
+
+
+    newpath = '../Result/'+ output_folder
+    if not os.path.exists(newpath):
+        os.makedirs(newpath)
 
     ###################################
     # Initializing training dataset    #
     ####################################
     datasets,indi_matrix,data_test,indi_matrix_test,n_train_batches,numMod,raw,trainstats_list,visible_size_Mod = \
-        load_data(param_list,data,batch_size,missing_rate,train = True)
+        load_data(param_list,data,batch_size,missing_rate,train = True,order = order)
 
     ####################################
     # Initializing validation dataset  #
     ####################################
     valid_batch_size = 306
-    validationset,indi_matrix_validation,n_valid_batches = \
-        load_data(param_list,validationdata,valid_batch_size, missing_rate,train = False)
+    validationset,indi_matrix_validation,valid_test,indi_matrix_valid_test,n_valid_batches = \
+        load_data(param_list,validationdata,valid_batch_size, missing_rate,train = False,order = order)
 
 
     # start-snippet-2
@@ -382,6 +387,7 @@ def test_AE(data='',validationdata= '', param_list= None,missing = True, missing
         bvis=None,
         missing = missing,
         param_list = param_list,
+        share = share
     )
 
     cost,updates = ae.get_cost_updates(learning_rate)
@@ -480,7 +486,7 @@ def test_AE(data='',validationdata= '', param_list= None,missing = True, missing
                     print('saving the model for epoch %i' % epoch)
                     best_epoch = epoch
                     #f = open('../Result_test/best_model_epoch_' +str() + '.txt', 'w')
-                    save('../Result_test/best_model_epoch_' +str(epoch) +'.pkl', ae)
+                    save(newpath + '/best_model_epoch_' +str(epoch) +'.pkl', ae)
 
             if patience <= iter:
                 done_looping = True
@@ -505,64 +511,100 @@ def test_AE(data='',validationdata= '', param_list= None,missing = True, missing
     print('Best epoch is %i' % best_epoch )
     print('Now we starting computing the RMSE and error ratio')
 
-    ae = load('../Result_test/best_model_epoch_' +str(best_epoch) +'.pkl')
+    ae = newpath + '/best_model_epoch_' +str(epoch) +'.pkl'
 
-    W1=ae.W1.get_value(borrow=True)
-    W2=ae.W2.get_value(borrow=True)
-    b1=ae.b1.get_value(borrow=True)
-    b2=ae.b2.get_value(borrow=True)
-    G =ae.G.get_value(borrow= True)
+    W1,W2,b1,b2,G = load_numerical_params_ae(ae)
+
 
     bias_matrix = None
 
-    if missing:
-        bias_matrix = ae.bias_matrix.get_value(borrow=True)
-
 
     y = get_hidden_values(data_test,indi_matrix_test,W1,b1,G,bias_matrix,missing)
+
+    y2 = get_hidden_values(valid_test,indi_matrix_valid_test,W1,b1,G,bias_matrix,missing)
+
+    h1 = newpath + '/h1.npy'
+
+    h_valid = newpath + '/h_valid.npy'
+
+    numpy.save(h1,y)
+    numpy.save(h_valid,y2)
+
+
     reconstruction = get_reconstructed_input(y,W2,b2,G,missing)
 
     print(reconstruction)
 
-    numpy.savetxt('../Result_test/output_' +str(best_epoch) + '.txt',reconstruction,delimiter=',')
+    numpy.savetxt(newpath+ '/output_' +str(best_epoch) + '.txt',reconstruction,delimiter=',')
 
 
-    f = open('../Result_test/AE_' +str(best_epoch) + '.txt', 'w')
+    f = open(newpath +'/AE_' +str(best_epoch) + '.txt', 'w')
+
+    if order == 1:
+
+        for i in range(int(numMod)):
+            numpy.savetxt(newpath +'/Raw_' +str(i) + '.txt',
+            raw[:,i*visible_size_Mod:(i+1)*visible_size_Mod],delimiter=',')
+            numpy.savetxt(newpath+'/Recstru_' +str(i) + '_' +str(best_epoch) + '.txt',
+            denormActiv(reconstruction[:,i*visible_size_Mod:(i+1)*visible_size_Mod],trainstats_list[i]),delimiter=',')
 
 
-    for i in range(int(numMod)):
-        numpy.savetxt('../Result_test/Raw_' +str(i) + '.txt',
-        raw[:,i*visible_size_Mod:(i+1)*visible_size_Mod],delimiter=',')
-        numpy.savetxt('../Result_test/Recstru_' +str(i) + '_' +str(best_epoch) + '.txt',
-        denormActiv(reconstruction[:,i*visible_size_Mod:(i+1)*visible_size_Mod],trainstats_list[i]),delimiter=',')
+
+            print(f, 'AE RMSE for Modality', i, str(RMSE(raw[:,i*visible_size_Mod:(i+1)*visible_size_Mod],
+                                                  denormActiv(reconstruction[:,i*visible_size_Mod:(i+1)*visible_size_Mod],
+                                                           trainstats_list[i]))))
+
+
+            f.write('AE RMSE for Modality'+ '\t' + str(i) +'\t'+ str(RMSE(raw[:,i*visible_size_Mod:(i+1)*visible_size_Mod],
+                                                  denormActiv(reconstruction[:,i*visible_size_Mod:(i+1)*visible_size_Mod],
+                                                              trainstats_list[i]))) + '\n')
+
+
+            print(f, 'AE error ratio for Modality', i, str(error_ratio(raw[:,i*visible_size_Mod:(i+1)*visible_size_Mod],
+                                                  denormActiv(reconstruction[:,i*visible_size_Mod:(i+1)*visible_size_Mod],
+                                                           trainstats_list[i]))))
+
+            f.write('AE error ratio for Modality'+ '\t' + str(i) +'\t'+ str(error_ratio(raw[:,i*visible_size_Mod:(i+1)*visible_size_Mod],
+                                                  denormActiv(reconstruction[:,i*visible_size_Mod:(i+1)*visible_size_Mod],
+                                                              trainstats_list[i]))) + '\n')
+
+            print('we are done here')
+    else:
+
+        for i in range(int(numMod)):
+            numpy.savetxt(newpath +'/Raw_' +str(i) + '.txt',
+            raw[:,i*visible_size_Mod:(i+1)*visible_size_Mod],delimiter=',')
+            numpy.savetxt(newpath+'/Recstru_' +str(i) + '_' +str(best_epoch) + '.txt',
+           reconstruction[:,i*visible_size_Mod:(i+1)*visible_size_Mod],delimiter=',')
 
 
 
-        print(f, 'AE RMSE for Modality', i, str(RMSE(raw[:,i*visible_size_Mod:(i+1)*visible_size_Mod],
-                                              denormActiv(reconstruction[:,i*visible_size_Mod:(i+1)*visible_size_Mod],
-                                                       trainstats_list[i]))))
+            print(f, 'AE RMSE for Modality', i, str(RMSE(raw[:,i*visible_size_Mod:(i+1)*visible_size_Mod],
+                                                  reconstruction[:,i*visible_size_Mod:(i+1)*visible_size_Mod])))
 
 
-        f.write('AE RMSE for Modality'+ '\t' + str(i) +'\t'+ str(RMSE(raw[:,i*visible_size_Mod:(i+1)*visible_size_Mod],
-                                              denormActiv(reconstruction[:,i*visible_size_Mod:(i+1)*visible_size_Mod],
-                                                          trainstats_list[i]))) + '\n')
+            f.write('AE RMSE for Modality'+ '\t' + str(i) +'\t'+ str(RMSE(raw[:,i*visible_size_Mod:(i+1)*visible_size_Mod],
+                                                  reconstruction[:,i*visible_size_Mod:(i+1)*visible_size_Mod])) + '\n')
 
 
-        print(f, 'AE error ratio for Modality', i, str(error_ratio(raw[:,i*visible_size_Mod:(i+1)*visible_size_Mod],
-                                              denormActiv(reconstruction[:,i*visible_size_Mod:(i+1)*visible_size_Mod],
-                                                       trainstats_list[i]))))
+            print(f, 'AE error ratio for Modality', i, str(error_ratio(raw[:,i*visible_size_Mod:(i+1)*visible_size_Mod],
+                                                  reconstruction[:,i*visible_size_Mod:(i+1)*visible_size_Mod]
+                                                           )))
 
-        f.write('AE error ratio for Modality'+ '\t' + str(i) +'\t'+ str(error_ratio(raw[:,i*visible_size_Mod:(i+1)*visible_size_Mod],
-                                              denormActiv(reconstruction[:,i*visible_size_Mod:(i+1)*visible_size_Mod],
-                                                          trainstats_list[i]))) + '\n')
+            f.write('AE error ratio for Modality'+ '\t' + str(i) +'\t'+ str(error_ratio(raw[:,i*visible_size_Mod:(i+1)*visible_size_Mod],
+                                                  reconstruction[:,i*visible_size_Mod:(i+1)*visible_size_Mod])) + '\n')
+
+    return ae, h1, h_valid, indi_matrix_test,indi_matrix_valid_test
+
+
 
 
 def get_hidden_values(x,indi_matrix,W1,b1,G,bias_matrix = None,missing = False):
 
     if missing:
-        bias_matrix = numpy.dot(indi_matrix,bias_matrix)
-        hidden_values = tanh(numpy.dot(x, W1*G) + bias_matrix + b1)
-
+        # bias_matrix = numpy.dot(indi_matrix,bias_matrix)
+        # hidden_values = tanh(numpy.dot(x, W1*G) + bias_matrix + b1)
+        hidden_values = tanh(numpy.dot(x, W1*G) + b1)
     else:
         hidden_values = tanh(numpy.dot(x, W1*G) + b1)
     return hidden_values
@@ -578,6 +620,15 @@ def get_reconstructed_input(hidden,W2,b2,G,missing = False):
 if __name__ == '__main__':
     ###param_list consists : decay_weight(lambda),sparsity(rho) and sparse_weight(beta)
     param_list = [[1e-5,0.01,1e-5],[1e-5,0.01,1e-5]]
-    dataset = '../Data/train_HumIllumDF_new.npy'
-    validationset = '../Data/test_HumIllumDF_new.npy'
-    test_AE(data=dataset,validationdata = validationset,param_list=param_list)
+    dataset = '../Result/m_HI_1/h1.npy'
+    validationset = '../Result/m_HI_1/h_valid.npy'
+    missing1=True
+    missing2 = False
+    share1 = False
+    missingrate1 = 0
+    learningrate = 0.08
+    training_epochs = 10
+    batch_size = 3000
+    test_AE(dataset,validationset, param_list,True,missing = missing2, missing_rate = 0,
+                      learning_rate=learningrate, training_epochs= training_epochs,
+                      batch_size = batch_size, output_folder='m_HI_2',order = 2)

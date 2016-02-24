@@ -198,7 +198,7 @@ def error_ratio(data1, data2):
     return numpy.sum(a)/numpy.sum(b)
 
 
-def load_data(param_list,data,batch_size,missing_rate,train = True):
+def load_data(param_list,data,batch_size,missing_rate,train = True,order=1):
 
     print('Loading training data................')
     numMod = len(param_list)
@@ -208,9 +208,17 @@ def load_data(param_list,data,batch_size,missing_rate,train = True):
     train_list = [0]*numMod
     trainstats_list = [0]*numMod
 
-    for i in range(numMod):
-        train_list[i], trainstats_list[i] = normActiv(raw[:,i*visible_size_Mod:(i+1)*visible_size_Mod])
-    datasets = numpy.concatenate(train_list, axis=1)
+
+    ##for the first autoencoder, we need normalization, however, for the second one, we did not need
+
+    if order == 1:
+
+        for i in range(numMod):
+            train_list[i], trainstats_list[i] = normActiv(raw[:,i*visible_size_Mod:(i+1)*visible_size_Mod])
+        datasets = numpy.concatenate(train_list, axis=1)
+
+    else:
+        datasets = raw
 
     print(datasets)
 
@@ -223,6 +231,7 @@ def load_data(param_list,data,batch_size,missing_rate,train = True):
     data_test = datasets
     indi_matrix_test = indi_matrix
 
+    print(indi_matrix)
 
     datasets = theano.shared(numpy.asarray(datasets,dtype=theano.config.floatX),name='datasets', borrow=True)
     indi_matrix = theano.shared(numpy.asarray(indi_matrix,dtype = theano.config.floatX ),name='indi_matrix', borrow=True)
@@ -233,5 +242,5 @@ def load_data(param_list,data,batch_size,missing_rate,train = True):
         return datasets,indi_matrix,data_test,indi_matrix_test,n_train_batches,numMod,raw,trainstats_list,visible_size_Mod
 
     else:
-        return datasets,indi_matrix,n_train_batches
+        return datasets,indi_matrix,data_test,indi_matrix_test,n_train_batches
 
